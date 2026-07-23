@@ -49,7 +49,9 @@ def mutate(g: StrategyGenome, rate: float = 0.2) -> StrategyGenome:
     if random.random() < rate:
         g.exit_style = random.choice(["ticks", "atr"])
     if random.random() < rate:
-        g.exit_trigger_ticks = max(1, min(12, g.exit_trigger_ticks + random.randint(-2, 2)))
+        g.exit_ref_close = random.choice([True, False])
+    if random.random() < rate:
+        g.exit_trigger_ticks = max(0, min(12, g.exit_trigger_ticks + random.randint(-2, 2)))
     if random.random() < rate:
         g.exit_offset_ticks = max(0, min(6, g.exit_offset_ticks + random.randint(-2, 2)))
     if random.random() < rate:

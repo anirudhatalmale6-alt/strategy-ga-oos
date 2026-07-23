@@ -137,8 +137,9 @@ class StrategyGenome:
     entry_offset_ticks: int
 
     # --- protective exit selector ---
-    exit_style: str                # "ticks" (trailing stop/limit off prev close, v2/LE) or "atr"
-    exit_trigger_ticks: int        # trail distance below prev close (exit_style="ticks")
+    exit_style: str                # "ticks" (trailing stop/limit, v2/LE) or "atr"
+    exit_ref_close: bool           # trail off Close[i-1] (True) or Low[i-1] (False)
+    exit_trigger_ticks: int        # trail distance below the reference (exit_style="ticks")
     exit_offset_ticks: int         # LE limit offset below the trigger
     atr_period: int
     atr_sl_mult: float
@@ -171,7 +172,8 @@ def create_random_genome() -> StrategyGenome:
         entry_offset_ticks=random.randint(0, 6),
 
         exit_style=random.choice(["ticks", "atr"]),
-        exit_trigger_ticks=random.randint(1, 12),
+        exit_ref_close=random.choice([True, False]),
+        exit_trigger_ticks=random.randint(0, 12),
         exit_offset_ticks=random.randint(0, 6),
         atr_period=random.randint(5, 20),
         atr_sl_mult=round(random.uniform(0.5, 2.5), 2),
@@ -281,17 +283,22 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame,
                             close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL"); exited = True
                         elif curr_high > pt_price:
                             close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT"); exited = True
-                    else:  # "ticks" -> trailing stop/limit off PREVIOUS close (v2/LE)
-                        new_trig = df.at[i - 1, "Close"] - trig_ticks
+                    else:  # "ticks" -> trailing stop/limit off the PREVIOUS bar (v2/LE)
+                        # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-offset)
+                        ref_base = df.at[i - 1, "Close"] if genome.exit_ref_close else df.at[i - 1, "Low"]
+                        new_trig = ref_base - trig_ticks
                         if new_trig > trail_stop:                      # ratchet up only
                             trail_stop = new_trig
                         lim_price = trail_stop - off
                         if curr_low <= trail_stop:
                             if fill_mode == "limit":
-                                # LE cap: never fill worse than the limit
+                                # LE: rest a limit -> fill AT the limit, no spread paid
+                                # (never worse than the limit; the offset is the price
+                                # you concede to raise fill odds)
                                 exec_exit = max(min(curr_open, trail_stop), lim_price)
                             else:
-                                exec_exit = min(curr_open, lim_price)  # pessimistic
+                                # plain stop -> sell into the bid, so pay the spread
+                                exec_exit = min(curr_open, trail_stop) - SPREAD_SLIPPAGE
                             close_trade(i, exec_exit, "Trail"); exited = True
 
                 # (2) end-of-day — fills same bar at the close (session boundary)
