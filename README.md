@@ -18,11 +18,22 @@ With one shared `ga_core.py`, the genome and engine exist in exactly one place, 
 
 ## The genome (all evolvable)
 
-- **Entry:** breakout / dip, with an `entry_offset_ticks` gene.
+- **Entry filter** (optional): a condition that may look back over completed bars i-1..i-3, e.g. `C[i-1] > L[i-2]`.
+- **Entry trigger** — off the most recent completed bar `[i-1]`:
+  - breakout → `High[i] > (High or Close)[i-1] + entry_offset_ticks` → fill pays the spread.
+  - dip → `Low[i] < (Low or Close)[i-1] - entry_offset_ticks` → limit fill, no slippage.
 - **Protective exit** (`exit_style` gene):
-  - `ticks` → stop `exit_trigger_ticks` below entry, limit capped `exit_offset_ticks` under the trigger (your v2 / LE model).
+  - `ticks` → **trailing** stop off previous close: `Close[i-1] - exit_trigger_ticks` (ratchets up, arms from entry bar +1), with the limit `exit_offset_ticks` under it (your v2 / LE model).
   - `atr` → ATR stop-loss / profit-target (your original generator).
-- **Structural exits** (both styles): `max_bars_hold`, optional exit condition, end-of-day.
+- **Structural exits** (both styles): `max_bars_hold` and the optional exit condition both fill at **Open[i+1] − spread**; end-of-day fills at that bar's close.
+
+## Outputs (saved to the script folder)
+
+- `hall_of_fame_results.json` / `best_strategy.json` — the evolved strategies.
+- `GA_best_equity.png` — the optimizer's in-sample best equity.
+- `OOS_Rank{N}_equity.png` — per-strategy IS/OOS equity charts.
+- `OOS_Rank{N}_trades.csv` — full trade list per strategy.
+- `strategy_logic.txt` — human-readable entry/exit logic for every strategy.
 
 ## LE fill model
 

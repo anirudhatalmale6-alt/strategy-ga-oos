@@ -127,16 +127,18 @@ class ConditionGene:
 @dataclass
 class StrategyGenome:
     # --- entry ---
+    # Optional filter condition (may look back over completed bars i-1..i-3,
+    # e.g. C[i-1] > L[i-2]).  The TRIGGER itself keys off the most recent
+    # completed bar [i-1].
     use_entry_cond: bool
     entry_cond: ConditionGene
-    entry_ref_var: str
-    entry_shift: int
     entry_trigger_type: str        # "breakout" or "dip"
+    entry_ref_close: bool          # True -> reference Close[i-1]; False -> High[i-1] (breakout) / Low[i-1] (dip)
     entry_offset_ticks: int
 
     # --- protective exit selector ---
-    exit_style: str                # "ticks" or "atr"
-    exit_trigger_ticks: int        # ticks stop below entry   (exit_style="ticks")
+    exit_style: str                # "ticks" (trailing stop/limit off prev close, v2/LE) or "atr"
+    exit_trigger_ticks: int        # trail distance below prev close (exit_style="ticks")
     exit_offset_ticks: int         # LE limit offset below the trigger
     atr_period: int
     atr_sl_mult: float
@@ -149,23 +151,23 @@ class StrategyGenome:
 
 
 def random_condition() -> ConditionGene:
-    return ConditionGene(
-        var1=random.choice(PRICE_FIELDS),
-        shift1=random.randint(1, 3),
-        op=random.choice([">=", "<=", "<", ">", "rising", "falling", "higher_x", "lower_x"]),
-        var2=random.choice(PRICE_FIELDS),
-        shift2=random.randint(1, 3),
-        x_bars=random.randint(2, 10),
-    )
+    var1, shift1 = random.choice(PRICE_FIELDS), random.randint(1, 3)
+    op = random.choice([">=", "<=", "<", ">", "rising", "falling", "higher_x", "lower_x"])
+    var2, shift2 = random.choice(PRICE_FIELDS), random.randint(1, 3)
+    # avoid a degenerate self-comparison (e.g. Low[t-2] > Low[t-2]) for the
+    # binary comparison operators — it's always a tautology or contradiction.
+    if op in (">=", "<=", "<", ">") and var1 == var2 and shift1 == shift2:
+        shift2 = shift1 % 3 + 1
+    return ConditionGene(var1=var1, shift1=shift1, op=op, var2=var2, shift2=shift2,
+                         x_bars=random.randint(2, 10))
 
 
 def create_random_genome() -> StrategyGenome:
     return StrategyGenome(
         use_entry_cond=random.choice([True, False]),
         entry_cond=random_condition(),
-        entry_ref_var=random.choice(PRICE_FIELDS),
-        entry_shift=random.randint(1, 3),
         entry_trigger_type=random.choice(["breakout", "dip"]),
+        entry_ref_close=random.choice([True, False]),
         entry_offset_ticks=random.randint(0, 6),
 
         exit_style=random.choice(["ticks", "atr"]),
@@ -232,117 +234,123 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame,
     entry_price = 0.0
     entry_idx = 0
     sl_price = pt_price = 0.0          # atr style
-    trig_price = lim_price = 0.0       # ticks style
+    trail_stop = -1e18                 # ticks style, ratchet-up-only trailing stop
+    pending_exit = False               # signal exit decided last bar, fills at THIS open
+    pending_reason = ""
 
     trades = []
     start_t = pd.to_datetime(SESSION_START).time()
     end_t = pd.to_datetime(SESSION_END).time()
 
+    off = genome.exit_offset_ticks * TICK_SIZE
+    trig_ticks = genome.exit_trigger_ticks * TICK_SIZE
+
+    def close_trade(exit_i, exec_exit, reason):
+        gross = (exec_exit - entry_price) * POSITION_SIZE * POINT_VALUE
+        net = gross - 2 * COMMISSION_PER_SIDE * POSITION_SIZE
+        trades.append({
+            "entry_dt": df.at[entry_idx, "Datetime"], "exit_dt": df.at[exit_i, "Datetime"],
+            "entry_price": entry_price, "exit_price": exec_exit,
+            "pnl": net, "bars_held": exit_i - entry_idx, "reason": reason,
+        })
+
     for i in range(WARMUP, n):
-        curr_time = df.at[i, "Time_Only"]
+        curr_time  = df.at[i, "Time_Only"]
+        curr_high  = df.at[i, "High"]
+        curr_low   = df.at[i, "Low"]
+        curr_open  = df.at[i, "Open"]
+        curr_close = df.at[i, "Close"]
 
         # ---------------- POSITION MANAGEMENT ----------------
         if in_position:
-            bars_held = i - entry_idx
-            curr_high = df.at[i, "High"]
-            curr_low  = df.at[i, "Low"]
-            curr_open = df.at[i, "Open"]
-            curr_close = df.at[i, "Close"]
-
-            exit_triggered = False
-            exec_exit = 0.0
-            exit_reason = ""
-
-            if genome.exit_style == "atr":
-                hit_sl = curr_low <= sl_price
-                hit_pt = curr_high > pt_price
-                if hit_sl:                                  # SL priority (conservative)
-                    exit_triggered = True
-                    exec_exit = sl_price - SPREAD_SLIPPAGE
-                    exit_reason = "SL"
-                elif hit_pt:
-                    exit_triggered = True
-                    exec_exit = pt_price - SPREAD_SLIPPAGE
-                    exit_reason = "PT"
-            else:  # "ticks" -> stop / stop-limit (your v2 / LE model)
-                if curr_low <= trig_price:
-                    exit_triggered = True
-                    if fill_mode == "limit":
-                        # LE cap: fill where a stop would, but never worse than
-                        # the limit. A straight gap below the limit rests unfilled
-                        # live (the .cpp time-backstop markets you out); here it
-                        # is capped -> treat 'limit' as the optimistic bound.
-                        exec_exit = max(min(curr_open, trig_price), lim_price)
-                    else:
-                        # pessimistic stop fill
-                        exec_exit = min(curr_open, lim_price)
-                    exit_reason = "Stop"
-
-            if not exit_triggered:
-                if curr_time >= end_t:
-                    exit_triggered = True
-                    exec_exit = curr_close - SPREAD_SLIPPAGE
-                    exit_reason = "EOD"
-                elif bars_held >= genome.max_bars_hold:
-                    exit_triggered = True
-                    exec_exit = curr_close - SPREAD_SLIPPAGE
-                    exit_reason = "N-Bars"
-                elif genome.use_exit_cond and evaluate_condition(genome.exit_cond, df, i):
-                    exit_triggered = True
-                    exec_exit = curr_close - SPREAD_SLIPPAGE
-                    exit_reason = "Exit Logic"
-
-            if exit_triggered:
-                gross_pnl = (exec_exit - entry_price) * POSITION_SIZE * POINT_VALUE
-                net_pnl = gross_pnl - 2 * COMMISSION_PER_SIDE * POSITION_SIZE
-                trades.append({
-                    "entry_dt": df.at[entry_idx, "Datetime"],
-                    "exit_dt":  df.at[i, "Datetime"],
-                    "entry_price": entry_price,
-                    "exit_price":  exec_exit,
-                    "pnl": net_pnl,
-                    "bars_held": bars_held,
-                    "reason": exit_reason,
-                })
+            # (0) a signal exit (N-bars / exit-cond) decided on the PREVIOUS bar
+            #     fills at THIS bar's open, minus spread.
+            if pending_exit:
+                close_trade(i, curr_open - SPREAD_SLIPPAGE, pending_reason)
                 in_position = False
-                continue
+                pending_exit = False
+                # fall through: this bar is now flat and may re-enter below
+            else:
+                exited = False
+
+                # (1) protective exit — intrabar, same-bar fill. Free pass on the
+                #     entry bar: the trailing stop only arms from entry_idx + 1.
+                if i > entry_idx:
+                    if genome.exit_style == "atr":
+                        if curr_low <= sl_price:                       # SL priority
+                            close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL"); exited = True
+                        elif curr_high > pt_price:
+                            close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT"); exited = True
+                    else:  # "ticks" -> trailing stop/limit off PREVIOUS close (v2/LE)
+                        new_trig = df.at[i - 1, "Close"] - trig_ticks
+                        if new_trig > trail_stop:                      # ratchet up only
+                            trail_stop = new_trig
+                        lim_price = trail_stop - off
+                        if curr_low <= trail_stop:
+                            if fill_mode == "limit":
+                                # LE cap: never fill worse than the limit
+                                exec_exit = max(min(curr_open, trail_stop), lim_price)
+                            else:
+                                exec_exit = min(curr_open, lim_price)  # pessimistic
+                            close_trade(i, exec_exit, "Trail"); exited = True
+
+                # (2) end-of-day — fills same bar at the close (session boundary)
+                if not exited and curr_time >= end_t:
+                    close_trade(i, curr_close - SPREAD_SLIPPAGE, "EOD"); exited = True
+
+                # (3) N-bars / exit-condition — decide now, FILL AT NEXT OPEN
+                if not exited:
+                    bars_held = i - entry_idx
+                    if bars_held >= genome.max_bars_hold:
+                        pending_exit, pending_reason = True, "N-Bars"
+                    elif genome.use_exit_cond and evaluate_condition(genome.exit_cond, df, i):
+                        pending_exit, pending_reason = True, "Exit Logic"
+
+                if exited:
+                    in_position = False
+                if in_position:
+                    continue   # still holding; do not look for a new entry this bar
 
         # ---------------- ENTRY ----------------
         if not in_position:
             if not (start_t <= curr_time < end_t):
                 continue
-            if i - genome.entry_shift < 0:
+            if i < 1:
                 continue
+            # optional filter: may reference completed bars i-1..i-3
             if genome.use_entry_cond and not evaluate_condition(genome.entry_cond, df, i):
                 continue
 
-            base_val = df.at[i - genome.entry_shift, genome.entry_ref_var]
-            curr_open = df.at[i, "Open"]
             triggered = False
-
             if genome.entry_trigger_type == "breakout":
-                ref_val = base_val + genome.entry_offset_ticks * TICK_SIZE
-                if df.at[i, "High"] > ref_val:
+                # trigger off the most recent completed bar [i-1]: High or Close
+                base = df.at[i - 1, "Close"] if genome.entry_ref_close else df.at[i - 1, "High"]
+                ref_val = base + genome.entry_offset_ticks * TICK_SIZE
+                if curr_high > ref_val:
                     triggered = True
-                    entry_price = max(ref_val, curr_open) + SPREAD_SLIPPAGE  # adverse
-            else:  # "dip" -> buy limit
-                ref_val = base_val - genome.entry_offset_ticks * TICK_SIZE
-                if df.at[i, "Low"] < ref_val:
+                    entry_price = max(ref_val, curr_open) + SPREAD_SLIPPAGE   # pays spread
+            else:  # "dip" -> buy limit off [i-1]: Low or Close
+                base = df.at[i - 1, "Close"] if genome.entry_ref_close else df.at[i - 1, "Low"]
+                ref_val = base - genome.entry_offset_ticks * TICK_SIZE
+                if curr_low < ref_val:
                     triggered = True
-                    entry_price = min(ref_val, curr_open)                     # limit, no adverse
+                    entry_price = min(ref_val, curr_open)                     # limit, no slippage
 
             if triggered:
                 in_position = True
                 entry_idx = i
+                trail_stop = -1e18
+                pending_exit = False
                 if genome.exit_style == "atr":
                     atr_val = df.at[i, f"ATR_{genome.atr_period}"]
                     if pd.isna(atr_val) or atr_val <= 0:
                         atr_val = 0.50
                     sl_price = entry_price - atr_val * genome.atr_sl_mult
                     pt_price = entry_price + atr_val * genome.atr_pt_mult
-                else:  # ticks
-                    trig_price = entry_price - genome.exit_trigger_ticks * TICK_SIZE
-                    lim_price  = trig_price - genome.exit_offset_ticks * TICK_SIZE
+
+    # close any dangling position at the last bar
+    if in_position:
+        close_trade(n - 1, df.at[n - 1, "Close"] - SPREAD_SLIPPAGE, "Data_End")
 
     return compute_performance_metrics(pd.DataFrame(trades))
 

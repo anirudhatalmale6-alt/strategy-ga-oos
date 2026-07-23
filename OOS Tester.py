@@ -10,12 +10,16 @@ outside the training years.
 
 Strategy logic is imported from ga_core.py — identical to the optimizer.
 """
+import os
 from typing import Any, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 plt.rcParams["text.parse_math"] = False   # treat '$' in titles/labels as literal, not LaTeX math
 import numpy as np
 import pandas as pd
+
+# Where saved charts / CSVs / logic files land (next to this script by default).
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 import ga_core as core
 from ga_core import (StrategyGenome, ConditionGene, run_backtest,
@@ -38,21 +42,36 @@ def format_condition(c: ConditionGene) -> str:
     return str(c)
 
 
+def describe_strategy(g: StrategyGenome) -> str:
+    """Full human-readable entry/exit logic for one genome (returned as text)."""
+    if g.entry_trigger_type == "breakout":
+        ref = "Close[i-1]" if g.entry_ref_close else "High[i-1]"
+        trig = f"High[i] > {ref} + {g.entry_offset_ticks} ticks  (breakout, pays spread)"
+    else:
+        ref = "Close[i-1]" if g.entry_ref_close else "Low[i-1]"
+        trig = f"Low[i] < {ref} - {g.entry_offset_ticks} ticks  (dip, limit / no slippage)"
+
+    if g.exit_style == "ticks":
+        prot = (f"Trailing stop off prev close: STOP = Close[i-1] - {g.exit_trigger_ticks} ticks "
+                f"(ratchet up, arms bar entry+1), limit {g.exit_offset_ticks} ticks under it (LE)")
+    else:
+        prot = f"ATR({g.atr_period}) stop x{g.atr_sl_mult} / target x{g.atr_pt_mult}"
+
+    lines = [
+        f"  Entry filter : {format_condition(g.entry_cond) if g.use_entry_cond else 'Disabled'}",
+        f"  Entry trigger: {trig}",
+        f"  Protective   : {prot}",
+        f"  Time exit    : after {g.max_bars_hold} bars  -> fills at Open[i+1] - spread",
+        f"  Custom exit  : {(format_condition(g.exit_cond) + '  -> fills at Open[i+1] - spread') if g.use_exit_cond else 'Disabled'}",
+    ]
+    return "\n".join(lines)
+
+
 def print_strategy_logic(rank: int, g: StrategyGenome):
-    trig = "High exceeds" if g.entry_trigger_type == "breakout" else "Low dips below"
     print("\n" + "-" * 70)
     print(f" STRATEGY RANK #{rank} LOGIC")
     print("-" * 70)
-    print(f"  Entry cond : {format_condition(g.entry_cond) if g.use_entry_cond else 'Disabled'}")
-    print(f"  Entry trig : {trig} {g.entry_ref_var}[t-{g.entry_shift}] "
-          f"{'+' if g.entry_trigger_type=='breakout' else '-'} {g.entry_offset_ticks} ticks")
-    if g.exit_style == "ticks":
-        print(f"  Protective : STOP {g.exit_trigger_ticks} ticks below entry, "
-              f"limit {g.exit_offset_ticks} ticks under the trigger (LE)")
-    else:
-        print(f"  Protective : ATR({g.atr_period}) stop x{g.atr_sl_mult} / target x{g.atr_pt_mult}")
-    print(f"  Time exit  : {g.max_bars_hold} bars")
-    print(f"  Custom exit: {format_condition(g.exit_cond) if g.use_exit_cond else 'Disabled'}")
+    print(describe_strategy(g))
     print("-" * 70)
 
 
@@ -105,6 +124,10 @@ def plot_windows(results_list: List[Tuple[int, Dict[str, Any]]],
         ax.set_xlabel("Date"); ax.set_ylabel("Net Profit ($)")
         ax.grid(True, ls=":", alpha=0.6); ax.legend(loc="upper left", fontsize=8.5)
         plt.tight_layout()
+
+        out_png = os.path.join(OUTPUT_DIR, f"OOS_Rank{rank}_equity.png")
+        fig.savefig(out_png, dpi=130)
+        print(f"  saved chart -> {out_png}")
     plt.show()
 
 
@@ -136,6 +159,7 @@ if __name__ == "__main__":
     print(f"Full bars: {len(full_df)}\n")
 
     results = []
+    logic_lines = []
     print("=" * 100)
     print(" FULL BACKTEST SUMMARY (IS + all OOS)")
     print("=" * 100)
@@ -150,6 +174,20 @@ if __name__ == "__main__":
               f"{stats['sharpe_ratio']:<7.2f} | {stats['sortino_ratio']:<7.2f} | "
               f"${stats['avg_per_trade']:<8.2f} | {stats['win_rate']*100:<5.1f}% | "
               f"{stats['trade_count']:<6} | ${stats['max_dd']:<8,.2f}")
+
+        # save this strategy's full trade list to CSV
+        tdf = stats["trade_df"]
+        if not tdf.empty:
+            csv_path = os.path.join(OUTPUT_DIR, f"OOS_Rank{rank}_trades.csv")
+            tdf.to_csv(csv_path, index=False)
+            print(f"       trades -> {csv_path}")
+        logic_lines.append(f"RANK #{rank}\n{describe_strategy(g)}\n")
     print("=" * 100)
+
+    # dump all strategies' entry/exit logic to a text file
+    logic_path = os.path.join(OUTPUT_DIR, "strategy_logic.txt")
+    with open(logic_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(logic_lines))
+    print(f"Strategy logic -> {logic_path}")
 
     plot_windows(results, is_range=IS_RANGE, oos_ranges=OOS_RANGES)

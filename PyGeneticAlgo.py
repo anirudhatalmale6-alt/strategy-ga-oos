@@ -8,6 +8,7 @@ keeps a top-N hall of fame, and writes them to ga_core.HOF_JSON for the OOS test
 All strategy logic (genome, engine, metrics, JSON) lives in ga_core.py so this
 file and "OOS Tester.py" can never drift apart again.
 """
+import os
 import random
 from typing import Any, Dict, List, Tuple
 
@@ -15,6 +16,8 @@ import matplotlib.pyplot as plt
 plt.rcParams["text.parse_math"] = False   # treat '$' in titles/labels as literal, not LaTeX math
 
 import ga_core as core
+
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 from ga_core import (StrategyGenome, create_random_genome, random_condition,
                      run_backtest, load_and_preprocess_data, save_hall_of_fame)
 
@@ -39,6 +42,10 @@ def mutate(g: StrategyGenome, rate: float = 0.2) -> StrategyGenome:
         g.max_bars_hold = random.randint(1, 10)
     if random.random() < rate:
         g.entry_offset_ticks = random.randint(0, 6)
+    if random.random() < rate:
+        g.entry_trigger_type = random.choice(["breakout", "dip"])
+    if random.random() < rate:
+        g.entry_ref_close = random.choice([True, False])
     if random.random() < rate:
         g.exit_style = random.choice(["ticks", "atr"])
     if random.random() < rate:
@@ -119,6 +126,9 @@ def run_ga_optimization(filepath, start_year=core.IS_START_YEAR, end_year=core.I
         population = nxt
 
     plt.ioff()
+    out_png = os.path.join(OUTPUT_DIR, "GA_best_equity.png")
+    fig.savefig(out_png, dpi=130)
+    print(f"Saved in-sample best equity chart -> {out_png}")
     return hall_of_fame
 
 
