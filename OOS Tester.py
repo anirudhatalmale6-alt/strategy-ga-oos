@@ -32,13 +32,13 @@ def format_condition(c: ConditionGene) -> str:
     if c.op in (">=", "<=", "<", ">"):
         return f"{c.var1}[t-{c.shift1}] {c.op} {c.var2}[t-{c.shift2}]"
     if c.op == "rising":
-        return "Close[t] > Close[t-1]"
+        return "Close[t-1] > Close[t-2]"
     if c.op == "falling":
-        return "Close[t] < Close[t-1]"
+        return "Close[t-1] < Close[t-2]"
     if c.op == "higher_x":
-        return f"{c.var1}[t] > max({c.var1}, last {c.x_bars})"
+        return f"{c.var1}[t-1] > max({c.var1}, t-2..t-{c.x_bars + 1})"
     if c.op == "lower_x":
-        return f"{c.var1}[t] < min({c.var1}, last {c.x_bars})"
+        return f"{c.var1}[t-1] < min({c.var1}, t-2..t-{c.x_bars + 1})"
     return str(c)
 
 

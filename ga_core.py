@@ -197,20 +197,23 @@ def evaluate_condition(cond: ConditionGene, df: pd.DataFrame, idx: int) -> bool:
         return v1 < v2
     if cond.op == ">":
         return v1 > v2
-    if cond.op == "rising":
-        return df.at[idx, "Close"] > df.at[idx - 1, "Close"]
-    if cond.op == "falling":
-        return df.at[idx, "Close"] < df.at[idx - 1, "Close"]
-    if cond.op == "higher_x":
+    # NOTE: entry filters are evaluated while bar `idx` is still forming, so they
+    # must ONLY reference COMPLETED bars.  The most recent completed bar is idx-1.
+    # (The binary comparisons above already do this via shift1/shift2 >= 1.)
+    if cond.op == "rising":                                    # last completed bar rose
+        return df.at[idx - 1, "Close"] > df.at[idx - 2, "Close"]
+    if cond.op == "falling":                                   # last completed bar fell
+        return df.at[idx - 1, "Close"] < df.at[idx - 2, "Close"]
+    if cond.op == "higher_x":                                  # last completed bar is highest of the prior x
         x = cond.x_bars
-        if idx - x < 0:
+        if idx - 1 - x < 0:
             return False
-        return df.at[idx, cond.var1] > df.loc[idx - x: idx - 1, cond.var1].max()
-    if cond.op == "lower_x":
+        return df.at[idx - 1, cond.var1] > df.loc[idx - 1 - x: idx - 2, cond.var1].max()
+    if cond.op == "lower_x":                                   # last completed bar is lowest of the prior x
         x = cond.x_bars
-        if idx - x < 0:
+        if idx - 1 - x < 0:
             return False
-        return df.at[idx, cond.var1] < df.loc[idx - x: idx - 1, cond.var1].min()
+        return df.at[idx - 1, cond.var1] < df.loc[idx - 1 - x: idx - 2, cond.var1].min()
     return False
 
 
