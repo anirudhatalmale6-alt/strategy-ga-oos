@@ -54,8 +54,7 @@ def describe_strategy(g: StrategyGenome) -> str:
     if g.exit_style == "ticks":
         ref = "Close[i-1]" if g.exit_ref_close else "Low[i-1]"
         prot = (f"Trailing stop off {ref}: STOP = {ref} - {g.exit_trigger_ticks} ticks "
-                f"(ratchet up, arms bar entry+1). Stop fill pays spread (bid); "
-                f"LE limit {g.exit_offset_ticks} ticks under the trigger fills with no spread")
+                f"(ratchet up, arms bar entry+1). Fill pays 1-tick spread (bid)")
     else:
         prot = f"ATR({g.atr_period}) stop x{g.atr_sl_mult} / target x{g.atr_pt_mult}"
 

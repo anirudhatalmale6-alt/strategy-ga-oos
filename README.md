@@ -23,9 +23,13 @@ With one shared `ga_core.py`, the genome and engine exist in exactly one place, 
   - breakout → `High[i] > (High or Close)[i-1] + entry_offset_ticks` → fill pays the spread.
   - dip → `Low[i] < (Low or Close)[i-1] - entry_offset_ticks` → limit fill, no slippage.
 - **Protective exit** (`exit_style` gene):
-  - `ticks` → **trailing** stop off previous close: `Close[i-1] - exit_trigger_ticks` (ratchets up, arms from entry bar +1), with the limit `exit_offset_ticks` under it (your v2 / LE model).
-  - `atr` → ATR stop-loss / profit-target (your original generator).
+  - `ticks` → **trailing** stop off the previous bar: `(Close or Low)[i-1] - exit_trigger_ticks` (ratchets up, arms from entry bar +1). `exit_ref_close` picks Close vs Low.
+  - `atr` → ATR stop-loss / profit-target.
 - **Structural exits** (both styles): `max_bars_hold` and the optional exit condition both fill at **Open[i+1] − spread**; end-of-day fills at that bar's close.
+
+## Exit fills
+
+Every exit pays a flat **1-tick spread** (`EXIT_SPREAD_TICKS`), i.e. fills at the bid. No LE / limit model — kept simple per the strategy spec. Entry: breakout pays the spread, dip is a no-slippage limit.
 
 ## Outputs (saved to the script folder)
 
@@ -34,14 +38,6 @@ With one shared `ga_core.py`, the genome and engine exist in exactly one place, 
 - `OOS_Rank{N}_equity.png` — per-strategy IS/OOS equity charts.
 - `OOS_Rank{N}_trades.csv` — full trade list per strategy.
 - `strategy_logic.txt` — human-readable entry/exit logic for every strategy.
-
-## LE fill model
-
-In `ga_core.py`, `FILL_MODE`:
-- `'stop'` — pessimistic, fills at `min(Open, limit)`.
-- `'limit'` — LE cap, `max(min(Open, trigger), limit)` → never worse than the limit.
-
-Run once each way; the net gap is what the LE exit saves in slippage.
 
 ## Run
 

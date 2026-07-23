@@ -29,7 +29,7 @@ def crossover(a: StrategyGenome, b: StrategyGenome) -> Tuple[StrategyGenome, Str
     c1 = StrategyGenome(**a.__dict__)
     c2 = StrategyGenome(**b.__dict__)
     # swap a spread of genes between the parents
-    for attr in ("exit_style", "exit_trigger_ticks", "exit_offset_ticks",
+    for attr in ("exit_style", "exit_ref_close", "exit_trigger_ticks",
                  "atr_period", "atr_sl_mult", "atr_pt_mult",
                  "entry_offset_ticks", "exit_cond"):
         setattr(c1, attr, getattr(b, attr))
@@ -52,8 +52,6 @@ def mutate(g: StrategyGenome, rate: float = 0.2) -> StrategyGenome:
         g.exit_ref_close = random.choice([True, False])
     if random.random() < rate:
         g.exit_trigger_ticks = max(0, min(12, g.exit_trigger_ticks + random.randint(-2, 2)))
-    if random.random() < rate:
-        g.exit_offset_ticks = max(0, min(6, g.exit_offset_ticks + random.randint(-2, 2)))
     if random.random() < rate:
         g.atr_sl_mult = round(max(0.5, min(2.5, g.atr_sl_mult + random.uniform(-0.3, 0.3))), 2)
     if random.random() < rate:
@@ -149,8 +147,9 @@ if __name__ == "__main__":
         print(f"  Win Rate   : {stats['win_rate']*100:.1f}%")
         print(f"  Max DD     : ${stats['max_dd']:.2f}")
         print(f"  Fitness    : {stats['fitness']:.2f}")
+        ref = "Close" if genome.exit_ref_close else "Low"
         print(f"  Exit style : {genome.exit_style}  "
-              f"(trig {genome.exit_trigger_ticks}t / off {genome.exit_offset_ticks}t "
+              f"(trail {ref}[i-1] - {genome.exit_trigger_ticks}t "
               f"| atr {genome.atr_period} sl{genome.atr_sl_mult} pt{genome.atr_pt_mult})")
 
     save_hall_of_fame(hof)   # -> hall_of_fame_results.json (read by the OOS tester)

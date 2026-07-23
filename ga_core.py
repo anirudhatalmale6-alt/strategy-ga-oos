@@ -17,22 +17,18 @@ That is why every time one file was revised, the other broke. With a single
 shared engine, the optimizer and the validator are GUARANTEED to run the exact
 same simulation — an in-sample winner reproduces bar-for-bar out-of-sample.
 
-Genome (superset — all of it is evolvable)
-------------------------------------------
-  entry : breakout / dip, with an entry_offset_ticks gene
-  exit  : exit_style gene picks the protective exit -
-            'ticks' -> stop at entry-exit_trigger_ticks, limit capped
-                       exit_offset_ticks below it (your v2 / LE model)
-            'atr'   -> ATR stop-loss / profit-target (your original generator)
-          plus structural exits shared by both: max_bars_hold, optional
-          exit condition, and end-of-day.
-
-Fill model for the 'ticks' exit
+Genome (all of it is evolvable)
 -------------------------------
-  FILL_MODE='stop'  -> pessimistic: fills at min(Open, limit)  (worst case)
-  FILL_MODE='limit' -> LE cap: max(min(Open, trigger), limit) -> never worse
-                       than the limit. The net gap between the two runs is
-                       exactly what your LE exit is saving in slippage.
+  entry : breakout / dip, trigger off bar [i-1], with an entry_offset_ticks gene
+  exit  : exit_style gene picks the protective exit -
+            'ticks' -> trailing stop off prev Close or Low, exit_trigger_ticks away
+            'atr'   -> ATR stop-loss / profit-target
+          plus structural exits: max_bars_hold, optional exit condition, end-of-day.
+
+Exit fills
+----------
+  Every exit pays a flat 1-tick spread (SPREAD_SLIPPAGE), i.e. fills at the bid.
+  No LE / limit model — kept simple per the strategy spec.
 """
 import json
 import random
@@ -47,7 +43,8 @@ import pandas as pd
 # ==========================================
 TICK_SIZE           = 0.01
 POINT_VALUE         = 1.00
-SPREAD_SLIPPAGE     = 0.01        # $/share adverse fill assumption (stop-style fills)
+EXIT_SPREAD_TICKS   = 1           # every exit pays this many ticks of spread (fills at bid)
+SPREAD_SLIPPAGE     = EXIT_SPREAD_TICKS * TICK_SIZE
 COMMISSION_PER_SIDE = 0.0035      # $/share/side  ($0.70 round-trip on 100 sh)
 POSITION_SIZE       = 100
 
@@ -67,9 +64,6 @@ HOF_JSON  = "hall_of_fame_results.json"
 BEST_JSON = "best_strategy.json"
 
 WARMUP = 20   # enough bars for ATR(20), higher_x(10), and shifts
-
-# Default fill model for the 'ticks' exit style ('stop' or 'limit').
-FILL_MODE = "stop"
 
 
 # ==========================================
@@ -137,10 +131,9 @@ class StrategyGenome:
     entry_offset_ticks: int
 
     # --- protective exit selector ---
-    exit_style: str                # "ticks" (trailing stop/limit, v2/LE) or "atr"
+    exit_style: str                # "ticks" (trailing stop) or "atr"
     exit_ref_close: bool           # trail off Close[i-1] (True) or Low[i-1] (False)
     exit_trigger_ticks: int        # trail distance below the reference (exit_style="ticks")
-    exit_offset_ticks: int         # LE limit offset below the trigger
     atr_period: int
     atr_sl_mult: float
     atr_pt_mult: float
@@ -174,7 +167,6 @@ def create_random_genome() -> StrategyGenome:
         exit_style=random.choice(["ticks", "atr"]),
         exit_ref_close=random.choice([True, False]),
         exit_trigger_ticks=random.randint(0, 12),
-        exit_offset_ticks=random.randint(0, 6),
         atr_period=random.randint(5, 20),
         atr_sl_mult=round(random.uniform(0.5, 2.5), 2),
         atr_pt_mult=round(random.uniform(0.5, 2.5), 2),
@@ -225,12 +217,11 @@ def evaluate_condition(cond: ConditionGene, df: pd.DataFrame, idx: int) -> bool:
 # ==========================================
 # 5. THE ONE BACKTEST ENGINE
 # ==========================================
-def run_backtest(genome: StrategyGenome, df: pd.DataFrame,
-                 fill_mode: str = None) -> Dict[str, Any]:
-    """Single engine used by BOTH the optimizer and the OOS tester."""
-    if fill_mode is None:
-        fill_mode = FILL_MODE
+def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
+    """Single engine used by BOTH the optimizer and the OOS tester.
 
+    Every exit pays a flat 1-tick spread (fills at the bid). No LE / limit model.
+    """
     n = len(df)
     in_position = False
     entry_price = 0.0
@@ -244,7 +235,6 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame,
     start_t = pd.to_datetime(SESSION_START).time()
     end_t = pd.to_datetime(SESSION_END).time()
 
-    off = genome.exit_offset_ticks * TICK_SIZE
     trig_ticks = genome.exit_trigger_ticks * TICK_SIZE
 
     def close_trade(exit_i, exec_exit, reason):
@@ -283,22 +273,15 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame,
                             close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL"); exited = True
                         elif curr_high > pt_price:
                             close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT"); exited = True
-                    else:  # "ticks" -> trailing stop/limit off the PREVIOUS bar (v2/LE)
-                        # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-offset)
+                    else:  # "ticks" -> trailing stop off the PREVIOUS bar (v2)
+                        # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-ticks)
                         ref_base = df.at[i - 1, "Close"] if genome.exit_ref_close else df.at[i - 1, "Low"]
                         new_trig = ref_base - trig_ticks
                         if new_trig > trail_stop:                      # ratchet up only
                             trail_stop = new_trig
-                        lim_price = trail_stop - off
                         if curr_low <= trail_stop:
-                            if fill_mode == "limit":
-                                # LE: rest a limit -> fill AT the limit, no spread paid
-                                # (never worse than the limit; the offset is the price
-                                # you concede to raise fill odds)
-                                exec_exit = max(min(curr_open, trail_stop), lim_price)
-                            else:
-                                # plain stop -> sell into the bid, so pay the spread
-                                exec_exit = min(curr_open, trail_stop) - SPREAD_SLIPPAGE
+                            # stop sells into the bid -> pay the 1-tick spread
+                            exec_exit = min(curr_open, trail_stop) - SPREAD_SLIPPAGE
                             close_trade(i, exec_exit, "Trail"); exited = True
 
                 # (2) end-of-day — fills same bar at the close (session boundary)
@@ -428,6 +411,9 @@ def dict_to_genome(d: Dict[str, Any]) -> StrategyGenome:
     d = dict(d)
     d["entry_cond"] = ConditionGene(**d["entry_cond"])
     d["exit_cond"] = ConditionGene(**d["exit_cond"])
+    # tolerate JSON written by an older genome layout: drop unknown keys.
+    valid = set(StrategyGenome.__dataclass_fields__.keys())
+    d = {k: v for k, v in d.items() if k in valid}
     return StrategyGenome(**d)
 
 
