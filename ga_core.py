@@ -53,6 +53,18 @@ SPREAD_SLIPPAGE     = EXIT_SPREAD_TICKS * TICK_SIZE
 COMMISSION_PER_SIDE = 0.0035      # $/share/side  ($0.70 round-trip on 100 sh)
 POSITION_SIZE       = 100
 
+
+def round_to_tick(price: float) -> float:
+    """Snap a price to the instrument's tick grid (nearest TICK_SIZE).
+
+    Real orders can only rest/fill on the tick grid (e.g. MES trades in 0.25
+    increments, never 3838.917). ATR-based stops/targets and any continuous
+    math land off-grid, so every fill price and decision LEVEL is snapped here.
+    A no-op when the price is already tick-aligned, so it's safe on any
+    instrument (stock 0.01, ES/MES 0.25, NQ 0.25, CL 0.01, ...).
+    """
+    return round(round(price / TICK_SIZE) * TICK_SIZE, 10)
+
 # ONE session, used by BOTH scripts (was 08:31 in generator, 08:45 in tester)
 SESSION_START = "08:31:00"
 SESSION_END   = "15:00:00"
@@ -120,6 +132,11 @@ def load_and_preprocess_data(filepath: str,
                 & (df["Datetime"].dt.year <= end_year)].reset_index(drop=True)
 
     df["Time_Only"] = df["Datetime"].dt.time
+
+    # Snap raw OHLC to the instrument's tick grid so the whole simulation runs
+    # on valid ticks (e.g. MES 0.25). No-op when the data is already aligned.
+    for col in PRICE_FIELDS:
+        df[col] = (df[col] / TICK_SIZE).round() * TICK_SIZE
 
     # ATR family (precomputed once so the engine just reads a column)
     high_low   = df["High"] - df["Low"]
@@ -276,6 +293,7 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
     trig_ticks = genome.exit_trigger_ticks * TICK_SIZE
 
     def close_trade(exit_i, exec_exit, reason):
+        exec_exit = round_to_tick(exec_exit)      # fill must land on the tick grid
         gross = (exec_exit - entry_price) * POSITION_SIZE * POINT_VALUE
         net = gross - 2 * COMMISSION_PER_SIDE * POSITION_SIZE
         trades.append({
@@ -316,7 +334,7 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                     elif genome.exit_style == "ticks":  # trailing stop off the PREVIOUS bar (v2)
                         # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-ticks)
                         ref_base = df.at[i - 1, "Close"] if genome.exit_ref_close else df.at[i - 1, "Low"]
-                        new_trig = ref_base - trig_ticks
+                        new_trig = round_to_tick(ref_base - trig_ticks)
                         if new_trig > trail_stop:                      # ratchet up only
                             trail_stop = new_trig
                         if curr_low <= trail_stop:
@@ -362,13 +380,13 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                 ref_val = base + genome.entry_offset_ticks * TICK_SIZE
                 if curr_high > ref_val:
                     triggered = True
-                    entry_price = max(ref_val, curr_open) + SPREAD_SLIPPAGE   # pays spread
+                    entry_price = round_to_tick(max(ref_val, curr_open) + SPREAD_SLIPPAGE)   # pays spread
             else:  # "dip" -> buy limit off [i-1]: Low or Close
                 base = df.at[i - 1, "Close"] if genome.entry_ref_close else df.at[i - 1, "Low"]
                 ref_val = base - genome.entry_offset_ticks * TICK_SIZE
                 if curr_low < ref_val:
                     triggered = True
-                    entry_price = min(ref_val, curr_open)                     # limit, no slippage
+                    entry_price = round_to_tick(min(ref_val, curr_open))      # limit, no slippage
 
             if triggered:
                 in_position = True
@@ -379,8 +397,8 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                     atr_val = df.at[i, f"ATR_{genome.atr_period}"]
                     if pd.isna(atr_val) or atr_val <= 0:
                         atr_val = 0.50
-                    sl_price = entry_price - atr_val * genome.atr_sl_mult
-                    pt_price = entry_price + atr_val * genome.atr_pt_mult
+                    sl_price = round_to_tick(entry_price - atr_val * genome.atr_sl_mult)
+                    pt_price = round_to_tick(entry_price + atr_val * genome.atr_pt_mult)
 
     # close any dangling position at the last bar
     if in_position:
