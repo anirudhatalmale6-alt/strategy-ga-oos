@@ -50,6 +50,13 @@ TICK_SIZE           = 0.01
 POINT_VALUE         = 1.00
 EXIT_SPREAD_TICKS   = 1           # every exit pays this many ticks of spread (fills at bid)
 SPREAD_SLIPPAGE     = EXIT_SPREAD_TICKS * TICK_SIZE
+# A breakout entry is a stop order that must EXCEED the reference to fire, then
+# lifts the ask. ENTRY_SPREAD_TICKS = 1 fills at reference + 1 tick (optimistic:
+# treats the breakout print as your fill). Set = 2 to match a live stop-limit
+# placed AFTER the breakout confirms: reference + 1 confirm tick + 1 spread tick.
+# (Dip entries are resting limits and never pay this — they fill at their price.)
+ENTRY_SPREAD_TICKS  = 1
+ENTRY_SPREAD_SLIPPAGE = ENTRY_SPREAD_TICKS * TICK_SIZE
 COMMISSION_PER_SIDE = 0.0035      # $/share/side  ($0.70 round-trip on 100 sh)
 POSITION_SIZE       = 100
 
@@ -380,7 +387,7 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                 ref_val = base + genome.entry_offset_ticks * TICK_SIZE
                 if curr_high > ref_val:
                     triggered = True
-                    entry_price = round_to_tick(max(ref_val, curr_open) + SPREAD_SLIPPAGE)   # pays spread
+                    entry_price = round_to_tick(max(ref_val, curr_open) + ENTRY_SPREAD_SLIPPAGE)   # pays entry spread
             else:  # "dip" -> buy limit off [i-1]: Low or Close
                 base = df.at[i - 1, "Close"] if genome.entry_ref_close else df.at[i - 1, "Low"]
                 ref_val = base - genome.entry_offset_ticks * TICK_SIZE
