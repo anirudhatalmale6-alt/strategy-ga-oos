@@ -47,7 +47,7 @@ def mutate(g: StrategyGenome, rate: float = 0.2) -> StrategyGenome:
     if random.random() < rate:
         g.entry_ref_close = random.choice([True, False])
     if random.random() < rate:
-        g.exit_style = random.choice(["ticks", "atr", "nbars"])
+        g.exit_style = random.choice(core.enabled_exit_styles())
     if random.random() < rate:
         g.exit_ref_close = random.choice([True, False])
     if random.random() < rate:
@@ -83,6 +83,7 @@ def run_ga_optimization(filepath, start_year=core.IS_START_YEAR, end_year=core.I
     print(f"Loading in-sample data {filepath} [{start_year}-{end_year}] ...")
     df = load_and_preprocess_data(filepath, start_year=start_year, end_year=end_year)
     print(f"In-sample bars: {len(df)}")
+    print(f"Exit types enabled for the GA: {core.enabled_exit_styles()}  (EOD always on)")
 
     population = [create_random_genome() for _ in range(pop_size)]
     hall_of_fame: List[Tuple[StrategyGenome, Dict[str, Any]]] = []
@@ -152,8 +153,10 @@ if __name__ == "__main__":
             exit_desc = f"trailing stop off {ref}[i-1] - {genome.exit_trigger_ticks}t"
         elif genome.exit_style == "atr":
             exit_desc = f"ATR({genome.atr_period}) sl x{genome.atr_sl_mult} / pt x{genome.atr_pt_mult}"
-        else:  # nbars
+        elif genome.exit_style == "nbars":
             exit_desc = f"N-bar stop after {genome.max_bars_hold} bars"
+        else:  # cond
+            exit_desc = "custom condition exit"
         print(f"  Exit style : {genome.exit_style}  ({exit_desc}; EOD always on)")
 
     save_hall_of_fame(hof)   # -> hall_of_fame_results.json (read by the OOS tester)

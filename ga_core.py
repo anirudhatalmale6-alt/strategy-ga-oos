@@ -20,12 +20,15 @@ same simulation — an in-sample winner reproduces bar-for-bar out-of-sample.
 Genome (all of it is evolvable)
 -------------------------------
   entry : breakout / dip, trigger off bar [i-1], with an entry_offset_ticks gene
-  exit  : exit_style gene picks EXACTLY ONE protective exit; the other two idle -
+  exit  : exit_style gene picks EXACTLY ONE protective exit; the rest idle -
             'ticks' -> trailing stop off prev Close or Low, exit_trigger_ticks away
             'atr'   -> ATR stop-loss / profit-target
             'nbars' -> flat after max_bars_hold bars (fills at next open - spread)
-          end-of-day flatten is ALWAYS on as the session backstop. An optional
-          custom exit condition can overlay any of the three.
+            'cond'  -> flat when the custom exit condition fires (next open)
+          The GA only picks from the types enabled in ENABLED_EXITS (flip any to
+          False to drop it, e.g. "atr": False = never use PT/SL). End-of-day
+          flatten is ALWAYS on as the session backstop. On the ticks/atr/nbars
+          modes an optional custom exit condition can also overlay.
 
 Exit fills
 ----------
@@ -66,6 +69,28 @@ HOF_JSON  = "hall_of_fame_results.json"
 BEST_JSON = "best_strategy.json"
 
 WARMUP = 20   # enough bars for ATR(20), higher_x(10), and shifts
+
+# ------------------------------------------------------------------
+# EXIT SEARCH SPACE  —  turn any exit type OFF so the GA never uses it.
+# ------------------------------------------------------------------
+# Each strategy uses EXACTLY ONE protective exit, picked by the GA from the
+# types enabled below (plus EOD, which is always on as the session backstop).
+# Flip a value to False to remove that exit from the search space entirely -
+# e.g. set "atr": False and no evolved strategy will ever use PT/SL.
+ENABLED_EXITS = {
+    "ticks": True,    # trailing stop off prev Close/Low
+    "atr":   True,    # PT/SL (ATR-based stop-loss / profit-target)
+    "nbars": True,    # exit after N bars
+    "cond":  True,    # custom condition exit (fills next open)
+}
+
+
+def enabled_exit_styles() -> List[str]:
+    """The exit types the GA may pick from (order fixed for reproducibility)."""
+    styles = [s for s in ("ticks", "atr", "nbars", "cond") if ENABLED_EXITS.get(s)]
+    if not styles:
+        raise ValueError("ENABLED_EXITS: at least one exit type must be True.")
+    return styles
 
 
 # ==========================================
@@ -138,8 +163,10 @@ class StrategyGenome:
     #   "ticks" -> trailing stop off prev Close/Low (exit_trigger_ticks away)
     #   "atr"   -> ATR stop-loss / profit-target
     #   "nbars" -> flat after max_bars_hold bars (fills at next open - spread)
-    # EOD flatten is ALWAYS on regardless, as the session backstop.
-    exit_style: str                # "ticks" | "atr" | "nbars"
+    #   "cond"  -> flat when exit_cond fires (fills at next open - spread)
+    # Only styles enabled in ENABLED_EXITS are ever chosen. EOD flatten is
+    # ALWAYS on regardless, as the session backstop.
+    exit_style: str                # "ticks" | "atr" | "nbars" | "cond"
     exit_ref_close: bool           # trail off Close[i-1] (True) or Low[i-1] (False)  [exit_style="ticks"]
     exit_trigger_ticks: int        # trail distance below the reference               [exit_style="ticks"]
     atr_period: int                # [exit_style="atr"]
@@ -172,7 +199,7 @@ def create_random_genome() -> StrategyGenome:
         entry_ref_close=random.choice([True, False]),
         entry_offset_ticks=random.randint(0, 6),
 
-        exit_style=random.choice(["ticks", "atr", "nbars"]),
+        exit_style=random.choice(enabled_exit_styles()),
         exit_ref_close=random.choice([True, False]),
         exit_trigger_ticks=random.randint(0, 12),
         atr_period=random.randint(5, 20),
@@ -301,13 +328,16 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                 if not exited and curr_time >= end_t:
                     close_trade(i, curr_close - SPREAD_SLIPPAGE, "EOD"); exited = True
 
-                # (3) N-bar cap (only when it's the SELECTED exit) + custom exit
-                #     condition (independent overlay). Both decide now, FILL AT NEXT OPEN.
+                # (3) Signal exits — decide now, FILL AT NEXT OPEN:
+                #       - N-bar cap: only when 'nbars' is the selected exit.
+                #       - condition exit: as the SELECTED exit ('cond'), OR as an
+                #         optional overlay (use_exit_cond) on the ticks/atr/nbars modes.
                 if not exited:
                     bars_held = i - entry_idx
+                    cond_active = (genome.exit_style == "cond") or genome.use_exit_cond
                     if genome.exit_style == "nbars" and bars_held >= genome.max_bars_hold:
                         pending_exit, pending_reason = True, "N-Bars"
-                    elif genome.use_exit_cond and evaluate_condition(genome.exit_cond, df, i):
+                    elif cond_active and evaluate_condition(genome.exit_cond, df, i):
                         pending_exit, pending_reason = True, "Exit Logic"
 
                 if exited:
