@@ -47,7 +47,7 @@ def mutate(g: StrategyGenome, rate: float = 0.2) -> StrategyGenome:
     if random.random() < rate:
         g.entry_ref_close = random.choice([True, False])
     if random.random() < rate:
-        g.exit_style = random.choice(["ticks", "atr"])
+        g.exit_style = random.choice(["ticks", "atr", "nbars"])
     if random.random() < rate:
         g.exit_ref_close = random.choice([True, False])
     if random.random() < rate:
@@ -147,10 +147,14 @@ if __name__ == "__main__":
         print(f"  Win Rate   : {stats['win_rate']*100:.1f}%")
         print(f"  Max DD     : ${stats['max_dd']:.2f}")
         print(f"  Fitness    : {stats['fitness']:.2f}")
-        ref = "Close" if genome.exit_ref_close else "Low"
-        print(f"  Exit style : {genome.exit_style}  "
-              f"(trail {ref}[i-1] - {genome.exit_trigger_ticks}t "
-              f"| atr {genome.atr_period} sl{genome.atr_sl_mult} pt{genome.atr_pt_mult})")
+        if genome.exit_style == "ticks":
+            ref = "Close" if genome.exit_ref_close else "Low"
+            exit_desc = f"trailing stop off {ref}[i-1] - {genome.exit_trigger_ticks}t"
+        elif genome.exit_style == "atr":
+            exit_desc = f"ATR({genome.atr_period}) sl x{genome.atr_sl_mult} / pt x{genome.atr_pt_mult}"
+        else:  # nbars
+            exit_desc = f"N-bar stop after {genome.max_bars_hold} bars"
+        print(f"  Exit style : {genome.exit_style}  ({exit_desc}; EOD always on)")
 
     save_hall_of_fame(hof)   # -> hall_of_fame_results.json (read by the OOS tester)
     plt.show()

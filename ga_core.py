@@ -130,16 +130,22 @@ class StrategyGenome:
     entry_ref_close: bool          # True -> reference Close[i-1]; False -> High[i-1] (breakout) / Low[i-1] (dip)
     entry_offset_ticks: int
 
-    # --- protective exit selector ---
-    exit_style: str                # "ticks" (trailing stop) or "atr"
-    exit_ref_close: bool           # trail off Close[i-1] (True) or Low[i-1] (False)
-    exit_trigger_ticks: int        # trail distance below the reference (exit_style="ticks")
-    atr_period: int
-    atr_sl_mult: float
-    atr_pt_mult: float
+    # --- protective exit selector (pick EXACTLY ONE of three) ---
+    # exit_style chooses the single protective exit this strategy uses; the other
+    # two are ignored entirely:
+    #   "ticks" -> trailing stop off prev Close/Low (exit_trigger_ticks away)
+    #   "atr"   -> ATR stop-loss / profit-target
+    #   "nbars" -> flat after max_bars_hold bars (fills at next open - spread)
+    # EOD flatten is ALWAYS on regardless, as the session backstop.
+    exit_style: str                # "ticks" | "atr" | "nbars"
+    exit_ref_close: bool           # trail off Close[i-1] (True) or Low[i-1] (False)  [exit_style="ticks"]
+    exit_trigger_ticks: int        # trail distance below the reference               [exit_style="ticks"]
+    atr_period: int                # [exit_style="atr"]
+    atr_sl_mult: float             # [exit_style="atr"]
+    atr_pt_mult: float             # [exit_style="atr"]
+    max_bars_hold: int             # bars-in-trade cap                                [exit_style="nbars"]
 
-    # --- structural exits (shared) ---
-    max_bars_hold: int
+    # --- custom exit condition (independent, optional overlay on any exit_style) ---
     use_exit_cond: bool
     exit_cond: ConditionGene
 
@@ -164,7 +170,7 @@ def create_random_genome() -> StrategyGenome:
         entry_ref_close=random.choice([True, False]),
         entry_offset_ticks=random.randint(0, 6),
 
-        exit_style=random.choice(["ticks", "atr"]),
+        exit_style=random.choice(["ticks", "atr", "nbars"]),
         exit_ref_close=random.choice([True, False]),
         exit_trigger_ticks=random.randint(0, 12),
         atr_period=random.randint(5, 20),
@@ -268,15 +274,17 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
             else:
                 exited = False
 
-                # (1) protective exit — intrabar, same-bar fill. Free pass on the
-                #     entry bar: the trailing stop only arms from entry_idx + 1.
+                # (1) protective exit — EXACTLY ONE mode is active (exit_style).
+                #     'ticks' (trailing) and 'atr' (SL/PT) fill intrabar, same bar.
+                #     Free pass on the entry bar: intrabar stops only arm from entry_idx+1.
+                #     'nbars' has no intrabar stop — it's handled in (3) below.
                 if i > entry_idx:
                     if genome.exit_style == "atr":
                         if curr_low <= sl_price:                       # SL priority
                             close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL"); exited = True
                         elif curr_high > pt_price:
                             close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT"); exited = True
-                    else:  # "ticks" -> trailing stop off the PREVIOUS bar (v2)
+                    elif genome.exit_style == "ticks":  # trailing stop off the PREVIOUS bar (v2)
                         # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-ticks)
                         ref_base = df.at[i - 1, "Close"] if genome.exit_ref_close else df.at[i - 1, "Low"]
                         new_trig = ref_base - trig_ticks
@@ -287,14 +295,15 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                             exec_exit = min(curr_open, trail_stop) - SPREAD_SLIPPAGE
                             close_trade(i, exec_exit, "Trail"); exited = True
 
-                # (2) end-of-day — fills same bar at the close (session boundary)
+                # (2) end-of-day — ALWAYS on. Fills same bar at the close (session boundary).
                 if not exited and curr_time >= end_t:
                     close_trade(i, curr_close - SPREAD_SLIPPAGE, "EOD"); exited = True
 
-                # (3) N-bars / exit-condition — decide now, FILL AT NEXT OPEN
+                # (3) N-bar cap (only when it's the SELECTED exit) + custom exit
+                #     condition (independent overlay). Both decide now, FILL AT NEXT OPEN.
                 if not exited:
                     bars_held = i - entry_idx
-                    if bars_held >= genome.max_bars_hold:
+                    if genome.exit_style == "nbars" and bars_held >= genome.max_bars_hold:
                         pending_exit, pending_reason = True, "N-Bars"
                     elif genome.use_exit_cond and evaluate_condition(genome.exit_cond, df, i):
                         pending_exit, pending_reason = True, "Exit Logic"

@@ -51,18 +51,25 @@ def describe_strategy(g: StrategyGenome) -> str:
         ref = "Close[i-1]" if g.entry_ref_close else "Low[i-1]"
         trig = f"Low[i] < {ref} - {g.entry_offset_ticks} ticks  (dip, limit / no slippage)"
 
+    # Exactly ONE protective exit is active (g.exit_style); the other two are ignored.
     if g.exit_style == "ticks":
         ref = "Close[i-1]" if g.exit_ref_close else "Low[i-1]"
-        prot = (f"Trailing stop off {ref}: STOP = {ref} - {g.exit_trigger_ticks} ticks "
+        prot = (f"[SELECTED] Trailing stop off {ref}: STOP = {ref} - {g.exit_trigger_ticks} ticks "
                 f"(ratchet up, arms bar entry+1). Fill pays 1-tick spread (bid)")
-    else:
-        prot = f"ATR({g.atr_period}) stop x{g.atr_sl_mult} / target x{g.atr_pt_mult}"
+        time_exit = "Ignored (N-bar not selected)"
+    elif g.exit_style == "atr":
+        prot = f"[SELECTED] ATR({g.atr_period}) stop x{g.atr_sl_mult} / target x{g.atr_pt_mult}"
+        time_exit = "Ignored (N-bar not selected)"
+    else:  # nbars
+        prot = "Ignored (trailing/PT-SL not selected)"
+        time_exit = f"[SELECTED] N-bar stop after {g.max_bars_hold} bars  -> fills at Open[i+1] - spread"
 
     lines = [
         f"  Entry filter : {format_condition(g.entry_cond) if g.use_entry_cond else 'Disabled'}",
         f"  Entry trigger: {trig}",
         f"  Protective   : {prot}",
-        f"  Time exit    : after {g.max_bars_hold} bars  -> fills at Open[i+1] - spread",
+        f"  Time exit    : {time_exit}",
+        f"  EOD exit     : always on -> flat at session close - spread",
         f"  Custom exit  : {(format_condition(g.exit_cond) + '  -> fills at Open[i+1] - spread') if g.use_exit_cond else 'Disabled'}",
     ]
     return "\n".join(lines)
