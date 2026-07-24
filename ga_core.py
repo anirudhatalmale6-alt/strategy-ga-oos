@@ -20,10 +20,12 @@ same simulation — an in-sample winner reproduces bar-for-bar out-of-sample.
 Genome (all of it is evolvable)
 -------------------------------
   entry : breakout / dip, trigger off bar [i-1], with an entry_offset_ticks gene
-  exit  : exit_style gene picks the protective exit -
+  exit  : exit_style gene picks EXACTLY ONE protective exit; the other two idle -
             'ticks' -> trailing stop off prev Close or Low, exit_trigger_ticks away
             'atr'   -> ATR stop-loss / profit-target
-          plus structural exits: max_bars_hold, optional exit condition, end-of-day.
+            'nbars' -> flat after max_bars_hold bars (fills at next open - spread)
+          end-of-day flatten is ALWAYS on as the session backstop. An optional
+          custom exit condition can overlay any of the three.
 
 Exit fills
 ----------
