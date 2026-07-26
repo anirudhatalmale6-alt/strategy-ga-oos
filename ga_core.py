@@ -307,6 +307,24 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
 
     trig_ticks = genome.exit_trigger_ticks * TICK_SIZE
 
+    # --- session-boundary detection (prevents overnight carry) ---------------
+    # A position MUST be flat by the session's last bar. We cannot rely on a bar
+    # landing at/after end_t: on event-based bars (P&F / reversal) a quiet day
+    # often prints no brick between the last bar before the close and end_t, so
+    # the old "curr_time >= end_t" check silently missed most days and let trades
+    # teleport across the overnight gap (median ~15 pts on ES, up to 800+). We
+    # flatten on the LAST BAR OF EACH SESSION instead, at that bar's close.
+    _dt = pd.to_datetime(df["Datetime"])
+    if start_t <= end_t:                                  # intraday session
+        _sess = _dt.dt.normalize().to_numpy()             #   group by calendar day
+    else:                                                 # overnight wrap (start > end)
+        _roll = (_dt.dt.time >= start_t).astype("int64")  #   bars >= start_t roll to next day
+        _sess = (_dt.dt.normalize() + pd.to_timedelta(_roll, unit="D")).to_numpy()
+    is_session_last_bar = np.empty(n, dtype=bool)
+    if n:
+        is_session_last_bar[-1] = True
+        is_session_last_bar[:-1] = _sess[1:] != _sess[:-1]
+
     def close_trade(exit_i, exec_exit, reason):
         nonlocal last_exit_idx
         last_exit_idx = exit_i                    # start the re-entry cooldown from here
@@ -363,8 +381,10 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                             exec_exit = min(curr_open, trail_stop) - SPREAD_SLIPPAGE
                             close_trade(i, exec_exit, "Trail"); exited = True
 
-                # (2) end-of-day — ALWAYS on. Fills same bar at the close (session boundary).
-                if not exited and curr_time >= end_t:
+                # (2) end-of-day — ALWAYS on. Flatten at the session's last bar (or the
+                #     first bar at/after end_t), filling at that bar's close. This is what
+                #     stops a position teleporting across the overnight gap.
+                if not exited and (curr_time >= end_t or is_session_last_bar[i]):
                     close_trade(i, curr_close - SPREAD_SLIPPAGE, "EOD"); exited = True
 
                 # (3) Signal exits — decide now, FILL AT NEXT OPEN:
@@ -388,6 +408,10 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
         if not in_position:
             if i - last_exit_idx < REENTRY_COOLDOWN_BARS:
                 continue                          # cooldown: no re-entry too soon after an exit
+            if is_session_last_bar[i]:
+                continue                          # no NEW entry on a session's last bar -
+                                                  # it could only be held overnight (no
+                                                  # in-session bar left to manage/exit it).
             if not (start_t <= curr_time < end_t):
                 continue
             if i < 1:

@@ -68,9 +68,15 @@ THE 14 GUARDRAILS
     It references the PREVIOUS bar's Close/Low, ratchets up only, and
     never tightens using the current bar's data.
 
-12. SESSION GATE + EOD FLATTEN.
+12. SESSION GATE + EOD FLATTEN + NO OVERNIGHT CARRY.
     Entries only inside session hours (SESSION_START..SESSION_END); any
-    open position is force-flattened at the session close, minus spread.
+    open position is force-flattened at the SESSION'S LAST BAR (not only
+    when a bar lands at/after end_t - on event bars like P&F/reversal a
+    quiet day may print no bar after the close, so a time-only check misses
+    most days and lets trades TELEPORT across the overnight gap). Also: no
+    NEW entry on a session's last bar - you could only hold it overnight.
+    THIS IS THE BIGGEST INFLATOR IF MISSED: overnight-gap trades can be the
+    entire apparent profit while the intraday strategy loses money.
 
 13. WARMUP GUARD.
     No trading until indicators (ATR) have enough history. No entries on
