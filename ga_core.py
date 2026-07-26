@@ -59,6 +59,13 @@ ENTRY_SPREAD_TICKS  = 1
 ENTRY_SPREAD_SLIPPAGE = ENTRY_SPREAD_TICKS * TICK_SIZE
 COMMISSION_PER_SIDE = 0.0035      # $/share/side  ($0.70 round-trip on 100 sh)
 POSITION_SIZE       = 100
+# After a trade exits, how many bars must pass before a new entry can open.
+# 0 = allow re-entry on the SAME bar the exit happened (old behaviour). This is
+# optimistic: e.g. a PT fills mid-bar, but that bar's High already cleared the
+# breakout reference, so the engine would jump straight back in on the same bar -
+# a fill you can't get live, because time only moves forward. 1 = no re-entry on
+# the exit bar (earliest new entry is the NEXT bar). Applies to every exit type.
+REENTRY_COOLDOWN_BARS = 1
 
 
 def round_to_tick(price: float) -> float:
@@ -292,6 +299,7 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
     trail_stop = -1e18                 # ticks style, ratchet-up-only trailing stop
     pending_exit = False               # signal exit decided last bar, fills at THIS open
     pending_reason = ""
+    last_exit_idx = -10**9             # bar index of the most recent exit (re-entry cooldown)
 
     trades = []
     start_t = pd.to_datetime(SESSION_START).time()
@@ -300,6 +308,8 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
     trig_ticks = genome.exit_trigger_ticks * TICK_SIZE
 
     def close_trade(exit_i, exec_exit, reason):
+        nonlocal last_exit_idx
+        last_exit_idx = exit_i                    # start the re-entry cooldown from here
         exec_exit = round_to_tick(exec_exit)      # fill must land on the tick grid
         gross = (exec_exit - entry_price) * POSITION_SIZE * POINT_VALUE
         net = gross - 2 * COMMISSION_PER_SIDE * POSITION_SIZE
@@ -372,6 +382,8 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
 
         # ---------------- ENTRY ----------------
         if not in_position:
+            if i - last_exit_idx < REENTRY_COOLDOWN_BARS:
+                continue                          # cooldown: no re-entry too soon after an exit
             if not (start_t <= curr_time < end_t):
                 continue
             if i < 1:
