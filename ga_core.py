@@ -366,10 +366,15 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                 #     'nbars' has no intrabar stop — it's handled in (3) below.
                 if i > entry_idx:
                     if genome.exit_style == "atr":
-                        if curr_low <= sl_price:                       # SL priority
-                            close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL"); exited = True
-                        elif curr_high > pt_price:
-                            close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT"); exited = True
+                        if curr_low <= sl_price:                       # SL priority. Stop = market:
+                            # pays the spread, and gap-fills at the WORSE of the open / stop
+                            # (a bar that opens through the stop fills you at the open).
+                            close_trade(i, min(curr_open, sl_price) - SPREAD_SLIPPAGE, "SL"); exited = True
+                        elif curr_high > pt_price + SPREAD_SLIPPAGE:    # PT = limit: price must trade a
+                            # full spread THROUGH the target for the resting limit to fill; it then fills
+                            # AT the target (no spread - a limit doesn't cross it), gap-filling at the
+                            # BETTER of the open / target if the bar gapped up past it.
+                            close_trade(i, max(curr_open, pt_price), "PT"); exited = True
                     elif genome.exit_style == "ticks":  # trailing stop off the PREVIOUS bar (v2)
                         # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-ticks)
                         ref_base = df.at[i - 1, "Close"] if genome.exit_ref_close else df.at[i - 1, "Low"]
@@ -454,11 +459,14 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                     # same-bar winner we can't prove from OHLC alone. This must run
                     # here (not in the exit block above) because exits are evaluated
                     # before entry each bar, so the exit block never sees the entry bar.
-                    if curr_low <= sl_price:
+                    # On THIS (entry) bar we were filled at entry_price mid-bar, so the
+                    # stop/target can't have gapped past it - no open-based gap fill here
+                    # (that only applies to later bars that can open through a level).
+                    if curr_low <= sl_price:                          # SL = market, pays spread
                         close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL")
                         in_position = False
-                    elif curr_high > pt_price:
-                        close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT")
+                    elif curr_high > pt_price + SPREAD_SLIPPAGE:      # PT = limit: fills AT target, no spread
+                        close_trade(i, pt_price, "PT")
                         in_position = False
 
     # close any dangling position at the last bar

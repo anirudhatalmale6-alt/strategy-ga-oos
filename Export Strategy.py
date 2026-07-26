@@ -157,10 +157,10 @@ def build_intrabar_exit(g: StrategyGenome) -> str:
     ind = " " * 20
     if g.exit_style == "atr":
         return "\n".join([
-            f"{ind}if L[i] <= sl_price:                      # SL priority",
-            f"{ind}    close_trade(i, sl_price - SPREAD, 'SL'); exited = True",
-            f"{ind}elif H[i] > pt_price:",
-            f"{ind}    close_trade(i, pt_price - SPREAD, 'PT'); exited = True",
+            f"{ind}if L[i] <= sl_price:                      # SL = market: pays spread, gap-fills at worse of open/stop",
+            f"{ind}    close_trade(i, min(O[i], sl_price) - SPREAD, 'SL'); exited = True",
+            f"{ind}elif H[i] > pt_price + SPREAD:            # PT = limit: trade a spread through, fill AT target (no spread), gap-fill at better of open/target",
+            f"{ind}    close_trade(i, max(O[i], pt_price), 'PT'); exited = True",
         ])
     if g.exit_style == "ticks":
         ref = "C[i-1]" if g.exit_ref_close else "L[i-1]"
@@ -209,10 +209,11 @@ def build_entrybar_atr(g: StrategyGenome) -> str:
         f"{ind}sl_price = round_tick(entry_price - atr_val * {g.atr_sl_mult})",
         f"{ind}pt_price = round_tick(entry_price + atr_val * {g.atr_pt_mult})",
         f"{ind}# No free pass on the entry bar: arm SL/PT the instant we're filled.",
-        f"{ind}if L[i] <= sl_price:                      # SL priority on the ambiguous bar",
+        f"{ind}# Filled at entry_price mid-bar, so no open-based gap fill here.",
+        f"{ind}if L[i] <= sl_price:                      # SL priority (market, pays spread)",
         f"{ind}    close_trade(i, sl_price - SPREAD, 'SL'); in_position = False",
-        f"{ind}elif H[i] > pt_price:",
-        f"{ind}    close_trade(i, pt_price - SPREAD, 'PT'); in_position = False",
+        f"{ind}elif H[i] > pt_price + SPREAD:            # PT = limit: fills AT target, no spread",
+        f"{ind}    close_trade(i, pt_price, 'PT'); in_position = False",
     ])
 
 
