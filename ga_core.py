@@ -340,7 +340,11 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
 
                 # (1) protective exit — EXACTLY ONE mode is active (exit_style).
                 #     'ticks' (trailing) and 'atr' (SL/PT) fill intrabar, same bar.
-                #     Free pass on the entry bar: intrabar stops only arm from entry_idx+1.
+                #     This block handles bars AFTER entry (i > entry_idx). The ATR
+                #     SL/PT is ALSO armed on the entry bar itself — see the entry
+                #     block below — so a same-bar stopout is booked, no free pass.
+                #     ('ticks' trailing legitimately can't fire on the entry bar: it
+                #     references the prior bar and starts un-ratcheted.)
                 #     'nbars' has no intrabar stop — it's handled in (3) below.
                 if i > entry_idx:
                     if genome.exit_style == "atr":
@@ -418,6 +422,20 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                         atr_val = 0.50
                     sl_price = round_to_tick(entry_price - atr_val * genome.atr_sl_mult)
                     pt_price = round_to_tick(entry_price + atr_val * genome.atr_pt_mult)
+                    # No free pass on the entry bar: the ATR stop/target is live the
+                    # instant we're filled, so a same-bar move through it MUST be
+                    # booked (else a loser that stopped out on bar 0 wrongly survives
+                    # to the next bar — an optimistic bug). SL priority on the
+                    # ambiguous bar: assume the stop hit first, never hand ourselves a
+                    # same-bar winner we can't prove from OHLC alone. This must run
+                    # here (not in the exit block above) because exits are evaluated
+                    # before entry each bar, so the exit block never sees the entry bar.
+                    if curr_low <= sl_price:
+                        close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL")
+                        in_position = False
+                    elif curr_high > pt_price:
+                        close_trade(i, pt_price - SPREAD_SLIPPAGE, "PT")
+                        in_position = False
 
     # close any dangling position at the last bar
     if in_position:

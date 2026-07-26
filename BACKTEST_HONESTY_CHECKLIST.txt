@@ -1,0 +1,90 @@
+========================================================================
+BACKTEST HONESTY CHECKLIST
+Guardrails that keep results realistic (no fills you couldn't get live)
+========================================================================
+
+Enforced centrally in ga_core.py, which drives ALL THREE tools:
+  - PyGeneticAlgo.py  (the GA optimizer)
+  - OOS Tester.py     (out-of-sample validator)
+  - Forward Test.py   (single pinned-strategy forward test)
+So every rule below is applied identically everywhere. An in-sample
+winner reproduces bar-for-bar out-of-sample and in forward testing.
+
+------------------------------------------------------------------------
+GOLDEN RULE
+------------------------------------------------------------------------
+If a fill or a decision depends on information you would NOT have had at
+that instant in live trading, it is a cheat. Cut it.
+
+------------------------------------------------------------------------
+THE 14 GUARDRAILS
+------------------------------------------------------------------------
+
+1. NO LOOKAHEAD.
+   Every signal (entry filter, breakout/dip trigger, custom exit
+   condition) reads only COMPLETED bars (i-1, i-2, ...). The current
+   bar's close is never used to decide something that happens during
+   that same bar.
+
+2. ENTRY PAYS THE SPREAD.
+   Breakout entries fill at max(reference, open) + entry spread - you
+   lift the ask, never the ideal breakout print. Controlled by
+   ENTRY_SPREAD_TICKS (set = 2 to model a post-confirmation stop-limit).
+   Dip entries are resting limits and fill at their price.
+
+3. EVERY EXIT PAYS THE 1-TICK SPREAD.
+   All exits fill at the bid (minus SPREAD_SLIPPAGE). No mid-market fills.
+
+4. FILLS SNAP TO THE TICK GRID.
+   round_to_tick on every entry, exit, and stop/target LEVEL. No sub-tick
+   fantasy prices.
+
+5. COMMISSION BOTH SIDES.
+   2 x COMMISSION_PER_SIDE per share deducted per round trip.
+
+6. SL PRIORITY ON AMBIGUOUS BARS.
+   When a bar's range covers BOTH the stop and the target, assume the
+   stop hit first (worst case). Never book the winner on a bar that
+   could have stopped you out.
+
+7. SIGNAL EXITS FILL AT THE NEXT OPEN.
+   N-bar cap and custom-condition exits decide on bar i and fill at
+   open[i+1] minus spread. You can't act on a bar until it closes.
+
+8. NO FREE PASS ON THE ENTRY BAR.
+   The ATR stop/target is armed on the entry bar itself, so a same-bar
+   stopout is booked. (A loser that stops out on bar 0 must NOT survive
+   to the next bar - that was an optimistic bug, now fixed.)
+
+9. NO SAME-BAR RE-ENTRY.
+   After any exit, the earliest a new trade can open is the next bar
+   (REENTRY_COOLDOWN_BARS). Time only moves forward.
+
+10. GAP-THROUGH FILLS AT THE GAP, NOT THE LEVEL.
+    A stop that gaps through fills at min(open, stop) minus spread -
+    never better than where the market actually was.
+
+11. TRAILING STOP IS CAUSAL.
+    It references the PREVIOUS bar's Close/Low, ratchets up only, and
+    never tightens using the current bar's data.
+
+12. SESSION GATE + EOD FLATTEN.
+    Entries only inside session hours (SESSION_START..SESSION_END); any
+    open position is force-flattened at the session close, minus spread.
+
+13. WARMUP GUARD.
+    No trading until indicators (ATR) have enough history. No entries on
+    partial / NaN indicator values.
+
+14. ONE ENGINE, ONE TRUTH.
+    ga_core.py is the single source of truth. Change a rule here and the
+    GA, OOS Tester, and Forward Test all inherit it - no divergence
+    between how you optimize and how you validate.
+
+------------------------------------------------------------------------
+HOW TO USE THIS LIST
+------------------------------------------------------------------------
+Before adding any new feature to the engine (new exit type, new entry
+model, new filter), walk it against all 14 points. If the change would
+let in a fill or decision that violates the golden rule, it is inflating
+results - redesign it so it can't.
