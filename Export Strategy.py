@@ -157,10 +157,10 @@ def build_intrabar_exit(g: StrategyGenome) -> str:
     ind = " " * 20
     if g.exit_style == "atr":
         return "\n".join([
-            f"{ind}if L[i] <= sl_price:                      # SL = market: pays spread, gap-fills at worse of open/stop",
-            f"{ind}    close_trade(i, min(O[i], sl_price) - SPREAD, 'SL'); exited = True",
-            f"{ind}elif H[i] > pt_price + SPREAD:            # PT = limit: trade a spread through, fill AT target (no spread), gap-fill at better of open/target",
-            f"{ind}    close_trade(i, max(O[i], pt_price), 'PT'); exited = True",
+            f"{ind}if L[i] <= sl_price:                      # SL = market, pays the spread",
+            f"{ind}    close_trade(i, sl_price - SPREAD, 'SL'); exited = True",
+            f"{ind}elif H[i] > pt_price + SPREAD:            # PT = limit: trade a spread through, fill AT target (no spread)",
+            f"{ind}    close_trade(i, pt_price, 'PT'); exited = True",
         ])
     if g.exit_style == "ticks":
         ref = "C[i-1]" if g.exit_ref_close else "L[i-1]"

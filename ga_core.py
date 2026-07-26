@@ -366,15 +366,14 @@ def run_backtest(genome: StrategyGenome, df: pd.DataFrame) -> Dict[str, Any]:
                 #     'nbars' has no intrabar stop — it's handled in (3) below.
                 if i > entry_idx:
                     if genome.exit_style == "atr":
-                        if curr_low <= sl_price:                       # SL priority. Stop = market:
-                            # pays the spread, and gap-fills at the WORSE of the open / stop
-                            # (a bar that opens through the stop fills you at the open).
-                            close_trade(i, min(curr_open, sl_price) - SPREAD_SLIPPAGE, "SL"); exited = True
+                        if curr_low <= sl_price:                       # SL = market, pays the spread
+                            close_trade(i, sl_price - SPREAD_SLIPPAGE, "SL"); exited = True
                         elif curr_high > pt_price + SPREAD_SLIPPAGE:    # PT = limit: price must trade a
-                            # full spread THROUGH the target for the resting limit to fill; it then fills
-                            # AT the target (no spread - a limit doesn't cross it), gap-filling at the
-                            # BETTER of the open / target if the bar gapped up past it.
-                            close_trade(i, max(curr_open, pt_price), "PT"); exited = True
+                            # full spread THROUGH the target for the resting limit to fill, then fills AT
+                            # the target (no spread - a limit doesn't cross it). No gap fill needed: the
+                            # session-last-bar flatten closes you before any overnight gap, and these bars
+                            # are contiguous (Open[i]=Close[i-1]) so there are no intrabar gaps either.
+                            close_trade(i, pt_price, "PT"); exited = True
                     elif genome.exit_style == "ticks":  # trailing stop off the PREVIOUS bar (v2)
                         # reference is prev Close (L<=C) or prev Low (L<=L[i-1]-ticks)
                         ref_base = df.at[i - 1, "Close"] if genome.exit_ref_close else df.at[i - 1, "Low"]
